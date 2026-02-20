@@ -1,22 +1,28 @@
 """
 train.py
-Fine-tuning Qwen2.5-3B-Instruct na danych klasyfikacji kodów celnych (Model 1).
+Fine-tuning Qwen2.5-3B jako klasyfikator kodów celnych (64 klasy).
+Używa QLoRA + AutoModelForSequenceClassification.
 """
 
 import os
 from pathlib import Path
 
+import numpy as np
 import torch
 import yaml
 from datasets import load_dataset
 from dotenv import load_dotenv
-from peft import LoraConfig
+from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
-    AutoModelForCausalLM,
+    AutoModelForSequenceClassification,
     AutoTokenizer,
     BitsAndBytesConfig,
+    DataCollatorWithPadding,
+    Trainer,
+    TrainingArguments,
 )
-from trl import SFTConfig, SFTTrainer
+
+import evaluate
 
 load_dotenv()
 
@@ -25,14 +31,14 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_PATH = BASE_DIR / "configs" / "train_config.yaml"
 
 
-# ── Wczytanie konfiguracji ────────────────────────────────────────────────────
+# ── Konfiguracja ──────────────────────────────────────────────────────────────
 def load_config(path: Path) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-# ── Konfiguracja kwantyzacji 4-bit ────────────────────────────────────────────
-def get_bnb_config(qlora_cfg: dict) -> BitsAndBytesConfig:
+# ── Kwantyzacja 4-bit ─────────────────────────────────────────────────────────
+def get_bnb_config() -> BitsAndBytesConfig:
     return BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -41,30 +47,33 @@ def get_bnb_config(qlora_cfg: dict) -> BitsAndBytesConfig:
     )
 
 
-# ── Ładowanie modelu i tokenizera ─────────────────────────────────────────────
+# ── Model + tokenizer ─────────────────────────────────────────────────────────
 def load_model_and_tokenizer(
-    model_cfg: dict,
+    model_name: str,
+    num_labels: int,
     bnb_config: BitsAndBytesConfig,
 ) -> tuple:
     tokenizer = AutoTokenizer.from_pretrained(
-        model_cfg["name"],
+        model_name,
         trust_remote_code=True,
     )
     tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_cfg["name"],
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name,
+        num_labels=num_labels,
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
     )
-    model.config.use_cache = False
+    # Wymagane przy 4-bit + gradient checkpointing
+    model = prepare_model_for_kbit_training(model)
+    model.config.pad_token_id = tokenizer.eos_token_id
 
     return model, tokenizer
 
 
-# ── Konfiguracja LoRA ─────────────────────────────────────────────────────────
+# ── LoRA ──────────────────────────────────────────────────────────────────────
 def get_lora_config(qlora_cfg: dict) -> LoraConfig:
     return LoraConfig(
         r=qlora_cfg["r"],
@@ -72,21 +81,20 @@ def get_lora_config(qlora_cfg: dict) -> LoraConfig:
         lora_dropout=qlora_cfg["lora_dropout"],
         target_modules=qlora_cfg["target_modules"],
         bias="none",
-        task_type="CAUSAL_LM",
+        task_type=TaskType.SEQ_CLS,  # sequence classification
     )
 
 
-# ── Formatowanie datasetu ─────────────────────────────────────────────────────
-def format_messages(example: dict, tokenizer: AutoTokenizer) -> dict:
-    """
-    Zamienia listę messages na pojedynczy string używając chat template Qwen.
-    """
-    text = tokenizer.apply_chat_template(
-        example["messages"],
-        tokenize=False,
-        add_generation_prompt=False,
-    )
-    return {"text": text}
+# ── Metryki ───────────────────────────────────────────────────────────────────
+def get_compute_metrics():
+    accuracy = evaluate.load("accuracy")
+
+    def compute_metrics(eval_pred):
+        logits, labels = eval_pred
+        predictions = np.argmax(logits, axis=-1)
+        return accuracy.compute(predictions=predictions, references=labels)
+
+    return compute_metrics
 
 
 # ── Główna logika ─────────────────────────────────────────────────────────────
@@ -98,27 +106,44 @@ def main() -> None:
     data_cfg = cfg["data"]
     hub_cfg = cfg["hub"]
 
-    # 1. Dataset
+    # 1. Dataset z HF
     dataset = load_dataset(
         data_cfg["hf_dataset"],
         token=os.getenv("HF_TOKEN"),
     )
-
-    # 2. Model i tokenizer
-    bnb_config = get_bnb_config(qlora_cfg)
-    model, tokenizer = load_model_and_tokenizer(model_cfg, bnb_config)
-
-    # 3. Formatowanie datasetu
-    dataset = dataset.map(
-        lambda ex: format_messages(ex, tokenizer),
-        remove_columns=["messages"],
+    num_labels = (
+        dataset["train"].features["label"].num_classes
+        if hasattr(dataset["train"].features["label"], "num_classes")
+        else len(set(dataset["train"]["label"]))
     )
 
-    # 4. LoRA
-    lora_config = get_lora_config(qlora_cfg)
+    print(f"Liczba klas: {num_labels}")
 
-    # 5. Training arguments + SFT config
-    training_args = SFTConfig(
+    # 2. Model + tokenizer
+    bnb_config = get_bnb_config()
+    model, tokenizer = load_model_and_tokenizer(
+        model_cfg["name"], num_labels, bnb_config
+    )
+
+    # 3. LoRA
+    lora_config = get_lora_config(qlora_cfg)
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+
+    # 4. Tokenizacja datasetu
+    def tokenize(batch):
+        return tokenizer(
+            batch["text"],
+            truncation=True,
+            max_length=model_cfg["max_seq_length"],
+            padding=False,  # padding robi DataCollator
+        )
+
+    tokenized = dataset.map(tokenize, batched=True, remove_columns=["text"])
+    data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+    # 5. Training arguments
+    training_args = TrainingArguments(
         output_dir=training_cfg["output_dir"],
         num_train_epochs=training_cfg["num_train_epochs"],
         per_device_train_batch_size=training_cfg["per_device_train_batch_size"],
@@ -128,40 +153,39 @@ def main() -> None:
         lr_scheduler_type=training_cfg["lr_scheduler_type"],
         warmup_steps=training_cfg["warmup_steps"],
         weight_decay=training_cfg["weight_decay"],
-        fp16=training_cfg["fp16"],
         bf16=training_cfg["bf16"],
+        fp16=training_cfg["fp16"],
         logging_steps=training_cfg["logging_steps"],
         eval_steps=training_cfg["eval_steps"],
         save_steps=training_cfg["save_steps"],
         save_total_limit=training_cfg["save_total_limit"],
         load_best_model_at_end=training_cfg["load_best_model_at_end"],
         metric_for_best_model=training_cfg["metric_for_best_model"],
+        greater_is_better=training_cfg["greater_is_better"],
         eval_strategy="steps",
         report_to="tensorboard",
         hub_token=os.getenv("HF_TOKEN"),
         push_to_hub=hub_cfg["push_to_hub"],
         hub_model_id=hub_cfg["hub_model_id"],
-        max_length=model_cfg["max_seq_length"],
     )
 
-    # 6. Trener
-    trainer = SFTTrainer(
+    # 6. Trainer
+    trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=dataset["train"],
-        eval_dataset=dataset["validation"],
-        peft_config=lora_config,
-        processing_class=tokenizer,
+        train_dataset=tokenized["train"],
+        eval_dataset=tokenized["validation"],
+        data_collator=data_collator,
+        compute_metrics=get_compute_metrics(),
     )
 
     # 7. Trening
     trainer.train()
 
-    # 8. Zapis finalnego modelu
+    # 8. Zapis + push
     trainer.save_model(training_cfg["output_dir"])
     if hub_cfg["push_to_hub"]:
         trainer.push_to_hub()
-        print(f"Model wgrany: {hub_cfg['hub_model_id']}")
 
 
 if __name__ == "__main__":
