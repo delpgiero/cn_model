@@ -34,11 +34,9 @@ TEST_SIZE = 0.1
 
 # ── Budowanie tekstu wejściowego ──────────────────────────────────────────────
 def build_text(row: pd.Series, subgroup_labels: dict) -> str:
-    """Format: PODGRUPA: 1102 | MATNR: 1102100130S10D931T | AVAILABLE: 0,5,12"""
+    """Format: PODGRUPA: 1102 | MATNR: 1102100130S10D931T | NAZWAPL: Śruba M10 | AVAILABLE: 0,5,12"""
     available = ",".join(str(l) for l in subgroup_labels[row["PODGRUPA"]])
-    return (
-        f"PODGRUPA: {row['PODGRUPA']} | MATNR: {row['MATNR']} | AVAILABLE: {available}"
-    )
+    return f"PODGRUPA: {row['PODGRUPA']} | MATNR: {row['MATNR']} | NAZWAPL: {row['NAZWAPL']} | AVAILABLE: {available}"
 
 
 # ── Split stratyfikowany ──────────────────────────────────────────────────────
@@ -88,7 +86,7 @@ def main() -> None:
     # 3. Dane treningowe
     df = df[df["STAWN"].notna()].copy()
     df["STAWN"] = df["STAWN"].astype(float).astype(int).astype(str)
-    df = df[["MATNR", "PODGRUPA", "STAWN"]].dropna()
+    df = df[["MATNR", "PODGRUPA", "NAZWAPL", "STAWN"]].dropna()
     print(
         f"Model 1: {len(df)} rekordów | {df['STAWN'].nunique()} kodów | {df['PODGRUPA'].nunique()} podgrup"
     )

@@ -1,7 +1,7 @@
 # Model
 model:
   name: "Qwen/Qwen2.5-3B-Instruct"
-  max_seq_length: 64
+  max_seq_length: 128
 
 # QLoRA
 qlora:
@@ -24,13 +24,13 @@ training:
   gradient_accumulation_steps: 2
   learning_rate: 0.0002
   lr_scheduler_type: "cosine"
-  warmup_steps: 50
+  warmup_steps: 100
   weight_decay: 0.01
   fp16: false
   bf16: true
   logging_steps: 50
-  eval_steps: 100
-  save_steps: 100
+  eval_steps: 50
+  save_steps: 50
   save_total_limit: 3
   load_best_model_at_end: true
   metric_for_best_model: "accuracy"
