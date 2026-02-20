@@ -1,73 +1,50 @@
 """
 predict.py
 Generowanie kodów celnych dla rekordów z pustym STAWN (dane produkcyjne).
+Podejście klasyfikacyjne z logit masking per podgrupa.
 """
 
+import json
 import os
-import re
 from pathlib import Path
 
 import pandas as pd
 import torch
 import yaml
+from datasets import Dataset
 from dotenv import load_dotenv
 from peft import PeftModel
+from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import (
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    DataCollatorWithPadding,
+)
 
 load_dotenv()
 
 # ── Ścieżki ──────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_PATH = BASE_DIR / "configs" / "train_config.yaml"
+LABEL_MAP_PATH = BASE_DIR / "data" / "processed" / "label_map.json"
+SUBGROUP_PATH = BASE_DIR / "data" / "processed" / "subgroup_labels.json"
 DATA_DIR = BASE_DIR / "data" / "processed"
 RESULTS_DIR = BASE_DIR / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
+PREDICT_BATCH_SIZE = 128
 
-# ── Wczytanie konfiguracji ────────────────────────────────────────────────────
+
+# ── Konfiguracja ──────────────────────────────────────────────────────────────
 def load_config(path: Path) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-# ── Wczytanie słowników ───────────────────────────────────────────────────────
-def load_lookups() -> dict[str, list[str]]:
-    lookup_dir = BASE_DIR / "data" / "lookups"
-    lookups = {}
-    for name in ("materialy", "pokrycia", "wglebienia"):
-        path = lookup_dir / f"{name}.txt"
-        lookups[name] = [
-            line.strip().lower()
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-    return lookups
-
-
-# ── Budowanie wiadomości ──────────────────────────────────────────────────────
-SYSTEM_MSG = (
-    "You are an expert in CN customs code classification. "
-    "Based on the subgroup and product description, assign the correct 8-digit customs code. "
-    "Return ONLY the 8-digit customs code. No explanation, no text, exactly 8 digits. "
-    "Example: 73181499"
-)
-
-
-def build_messages(row: pd.Series, lookups: dict[str, list[str]]) -> list:
-    user_content = (
-        f"SUBGROUP: {row['PODGRUPA']}\n"
-        f"MATNR: {row['MATNR']}\n"
-        f"DESCRIPTION: {row['NAZWAPL']}"
-    )
-    return [
-        {"role": "system", "content": SYSTEM_MSG},
-        {"role": "user", "content": user_content},
-    ]
-
-
 # ── Ładowanie modelu ──────────────────────────────────────────────────────────
-def load_model_and_tokenizer(model_cfg: dict, hub_cfg: dict) -> tuple:
+def load_model_and_tokenizer(model_cfg: dict, hub_cfg: dict, num_labels: int) -> tuple:
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -82,12 +59,14 @@ def load_model_and_tokenizer(model_cfg: dict, hub_cfg: dict) -> tuple:
     )
     tokenizer.pad_token = tokenizer.eos_token
 
-    base_model = AutoModelForCausalLM.from_pretrained(
+    base_model = AutoModelForSequenceClassification.from_pretrained(
         model_cfg["name"],
+        num_labels=num_labels,
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
     )
+    base_model.config.pad_token_id = tokenizer.eos_token_id
 
     model = PeftModel.from_pretrained(
         base_model,
@@ -99,47 +78,27 @@ def load_model_and_tokenizer(model_cfg: dict, hub_cfg: dict) -> tuple:
     return model, tokenizer
 
 
-# ── Predykcja z confidence ────────────────────────────────────────────────────
-def predict_with_confidence(
-    messages: list,
-    model,
-    tokenizer,
-    max_new_tokens: int = 16,
-) -> tuple[str, float]:
-    text = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
+# ── Budowanie tekstu wejściowego ──────────────────────────────────────────────
+def build_text(row: pd.Series, subgroup_labels: dict) -> str:
+    podgrupa = str(row["PODGRUPA"])
+    available = ",".join(str(l) for l in subgroup_labels.get(podgrupa, []))
+    return (
+        f"PODGRUPA: {podgrupa} | MATNR: {row['MATNR']} | "
+        f"NAZWAPL: {row['NAZWAPL']} | AVAILABLE: {available}"
     )
 
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
 
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
-            return_dict_in_generate=True,
-            output_scores=True,
-        )
-
-    # Dekodowanie odpowiedzi
-    generated_ids = outputs.sequences[0][inputs["input_ids"].shape[1] :]
-    decoded = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-
-    # Confidence: średnie prawdopodobieństwo po tokenach kodu
-    token_probs = [
-        torch.softmax(score, dim=-1).max().item() for score in outputs.scores
-    ]
-    confidence = sum(token_probs) / len(token_probs) if token_probs else 0.0
-
-    return decoded, round(confidence, 4)
-
-
-# ── Walidacja formatu kodu ────────────────────────────────────────────────────
-def is_valid_code(code: str) -> bool:
-    return bool(re.fullmatch(r"\d{8}", code))
+# ── Maskowanie logitów per podgrupa ──────────────────────────────────────────
+def apply_subgroup_mask(
+    logits: torch.Tensor,
+    podgrupy: list[str],
+    subgroup_labels: dict,
+) -> torch.Tensor:
+    masked = torch.full_like(logits, float("-inf"))
+    for i, podgrupa in enumerate(podgrupy):
+        allowed = subgroup_labels.get(podgrupa, list(range(logits.shape[1])))
+        masked[i, allowed] = logits[i, allowed]
+    return masked
 
 
 # ── Główna logika ─────────────────────────────────────────────────────────────
@@ -148,39 +107,90 @@ def main() -> None:
     model_cfg = cfg["model"]
     hub_cfg = cfg["hub"]
 
-    # 1. Wczytanie danych produkcyjnych
-    df = pd.read_csv(DATA_DIR / "model1_predict.csv", sep=";", dtype={"PODGRUPA": str})
-    df = df[["MATNR", "OPIS", "PODGRUPA"]].dropna(subset=["OPIS"])
+    # 1. Label map + subgroup labels
+    with open(LABEL_MAP_PATH, encoding="utf-8") as f:
+        label_map = json.load(f)
+    label_to_code = label_map["label_to_code"]
+    num_labels = len(label_to_code)
+
+    with open(SUBGROUP_PATH, encoding="utf-8") as f:
+        subgroup_labels = json.load(f)
+
+    # 2. Dane produkcyjne
+    df = pd.read_csv(
+        DATA_DIR / "model1_predict.csv",
+        sep=";",
+        dtype={"PODGRUPA": str},
+    )
+    df = df[["MATNR", "NAZWAPL", "PODGRUPA"]].dropna(subset=["MATNR", "PODGRUPA"])
     print(f"Rekordy do predykcji: {len(df)}")
 
-    # 2. Słowniki
-    lookups = load_lookups()
-
     # 3. Model
-    model, tokenizer = load_model_and_tokenizer(model_cfg, hub_cfg)
+    print("Ładowanie modelu...")
+    model, tokenizer = load_model_and_tokenizer(model_cfg, hub_cfg, num_labels)
 
-    # 4. Predykcje
-    records = []
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="Predykcja"):
-        messages = build_messages(row, lookups)
-        predicted, conf = predict_with_confidence(messages, model, tokenizer)
+    # 4. Budowanie tekstów
+    df["text"] = df.apply(lambda row: build_text(row, subgroup_labels), axis=1)
 
-        records.append(
-            {
-                "MATNR": row["MATNR"],
-                "PODGRUPA": row["PODGRUPA"],
-                "OPIS": row["OPIS"],
-                "STAWN_predykcja": predicted,
-                "confidence": conf,
-                "poprawny_format": is_valid_code(predicted),
-            }
+    # 5. Tokenizacja
+    dataset = Dataset.from_dict({"text": df["text"].tolist()})
+
+    def tokenize(batch):
+        return tokenizer(
+            batch["text"],
+            truncation=True,
+            max_length=cfg["model"]["max_seq_length"],
+            padding=False,
         )
 
-    # 5. Zapis lokalny
-    result_df = pd.DataFrame(records)
-    result_df.to_csv(RESULTS_DIR / "predict_results.csv", index=False, sep=";")
+    tokenized = dataset.map(tokenize, batched=True, remove_columns=["text"])
+    tokenized.set_format("torch")
 
-    # 6. Upload na HF
+    collator = DataCollatorWithPadding(tokenizer=tokenizer)
+    dataloader = DataLoader(
+        tokenized, batch_size=PREDICT_BATCH_SIZE, collate_fn=collator
+    )
+
+    # 6. Batch inference
+    all_predictions = []
+    all_confidences = []
+    all_texts = df["text"].tolist()
+
+    print("Predykcja...")
+    text_idx = 0
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Batch inference"):
+            batch_size = batch["input_ids"].shape[0]
+            podgrupy = [
+                all_texts[text_idx + i]
+                .split(" | ")[0]
+                .replace("PODGRUPA: ", "")
+                .strip()
+                for i in range(batch_size)
+            ]
+            text_idx += batch_size
+
+            inputs = {k: v.to(model.device) for k, v in batch.items()}
+            logits = model(**inputs).logits
+
+            masked = apply_subgroup_mask(logits, podgrupy, subgroup_labels)
+            probs = torch.softmax(masked, dim=-1)
+            predictions = probs.argmax(dim=-1).cpu().tolist()
+            confidences = probs.max(dim=-1).values.cpu().tolist()
+
+            all_predictions.extend(predictions)
+            all_confidences.extend(confidences)
+
+    # 7. Wyniki
+    df["STAWN_predykcja"] = [label_to_code[str(p)] for p in all_predictions]
+    df["confidence"] = [round(c, 4) for c in all_confidences]
+    df = df.drop(columns=["text"])
+
+    result_df = df[["MATNR", "PODGRUPA", "NAZWAPL", "STAWN_predykcja", "confidence"]]
+    result_df.to_csv(RESULTS_DIR / "predict_results.csv", index=False, sep=";")
+    print(f"Wyniki zapisane: {RESULTS_DIR / 'predict_results.csv'}")
+
+    # 8. Upload na HF
     from huggingface_hub import HfApi
 
     api = HfApi(token=os.getenv("HF_TOKEN"))
