@@ -1,3 +1,8 @@
+"""
+train.py
+Fine-tuning Qwen2.5-3B-Instruct na danych klasyfikacji kodów celnych (Model 1).
+"""
+
 import os
 from pathlib import Path
 
@@ -122,7 +127,8 @@ def main() -> None:
         gradient_accumulation_steps=training_cfg["gradient_accumulation_steps"],
         learning_rate=training_cfg["learning_rate"],
         lr_scheduler_type=training_cfg["lr_scheduler_type"],
-        warmup_ratio=training_cfg["warmup_ratio"],
+        # warmup_ratio=training_cfg["warmup_ratio"],  # deprecated w nowej wersji TRL
+        warmup_steps=training_cfg["warmup_steps"],
         weight_decay=training_cfg["weight_decay"],
         fp16=training_cfg["fp16"],
         bf16=training_cfg["bf16"],
@@ -146,7 +152,7 @@ def main() -> None:
         train_dataset=dataset["train"],
         eval_dataset=dataset["validation"],
         peft_config=lora_config,
-        dataset_text_field="text",
+        # dataset_text_field="text",  # usunięty w nowej wersji TRL
         max_seq_length=model_cfg["max_seq_length"],
         tokenizer=tokenizer,
     )
