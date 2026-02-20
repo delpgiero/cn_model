@@ -1,3 +1,8 @@
+"""
+predict.py
+Generowanie kodów celnych dla rekordów z pustym STAWN (dane produkcyjne).
+"""
+
 import os
 import re
 from pathlib import Path
@@ -45,7 +50,7 @@ SYSTEM_MSG = (
     "You are an expert in CN customs code classification. "
     "Assign a code ONLY from codes existing in the given subgroup. "
     "Analyze similarities in material, dimensions, coating and recess within the subgroup. "
-    "Return ONLY the 8-digit customs code, nothing else. "
+    "Return ONLY the 8-digit customs code. No explanation, no text, exactly 8 digits. "
     "Example: 73181499"
 )
 
@@ -54,10 +59,7 @@ def build_messages(row: pd.Series, lookups: dict[str, list[str]]) -> list:
     user_content = (
         f"SUBGROUP: {row['PODGRUPA']}\n"
         f"MATNR: {row['MATNR']}\n"
-        f"DESCRIPTION: {row['OPIS']}\n"
-        f"Materials: {', '.join(lookups['materialy'])}\n"
-        f"Coatings: {', '.join(lookups['pokrycia'])}\n"
-        f"Recesses: {', '.join(lookups['wglebienia'])}"
+        f"DESCRIPTION: {row['OPIS']}"
     )
     return [
         {"role": "system", "content": SYSTEM_MSG},

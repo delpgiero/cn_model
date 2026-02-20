@@ -14,7 +14,7 @@ from sklearn.model_selection import train_test_split
 load_dotenv()
 
 # ── Ścieżki ──────────────────────────────────────────────────────────────────
-BASE_DIR = Path(__file__).resolve().parents[2]
+BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 LOOKUP_DIR = DATA_DIR / "lookups"
 OUTPUT_DIR = DATA_DIR / "processed"
@@ -30,9 +30,8 @@ TEST_SIZE = 0.1
 
 SYSTEM_MSG = (
     "You are an expert in CN customs code classification. "
-    "Assign a code ONLY from codes existing in the given subgroup. "
-    "Analyze similarities in material, dimensions, coating and recess within the subgroup. "
-    "Return ONLY the 8-digit customs code, nothing else. "
+    "Based on the subgroup and product description, assign the correct 8-digit customs code. "
+    "Return ONLY the 8-digit customs code. No explanation, no text, exactly 8 digits. "
     "Example: 73181499"
 )
 
@@ -55,10 +54,7 @@ def build_messages(row: pd.Series, lookups: dict[str, list[str]]) -> dict:
     user_content = (
         f"SUBGROUP: {row['PODGRUPA']}\n"
         f"MATNR: {row['MATNR']}\n"
-        f"DESCRIPTION: {row['OPIS']}\n"
-        f"Materials: {', '.join(lookups['materialy'])}\n"
-        f"Coatings: {', '.join(lookups['pokrycia'])}\n"
-        f"Recesses: {', '.join(lookups['wglebienia'])}"
+        f"DESCRIPTION: {row['OPIS']}"
     )
 
     return {
