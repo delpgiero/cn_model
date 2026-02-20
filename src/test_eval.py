@@ -70,7 +70,7 @@ def predict(messages: list, model, tokenizer) -> str:
         tokenize=False,
         add_generation_prompt=True,
     )
-
+    print(f"INPUT:\n{text}\n")  # tymczasowy debug
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
 
     with torch.no_grad():
