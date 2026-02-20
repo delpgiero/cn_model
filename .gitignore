@@ -12,7 +12,7 @@ checkpoints/
 # Logs
 logs/
 runs/
-
+data/
 # Misc
 .DS_Store
 *.egg-info/
