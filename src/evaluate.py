@@ -136,8 +136,9 @@ def main() -> None:
 
     # 5. Batch inference
     all_predictions = []
+    all_confidences = []
     all_labels = []
-    all_texts = dataset["text"]  # potrzebne do wyciągnięcia podgrupy
+    all_texts = dataset["text"]
 
     print("Ewaluacja...")
     text_idx = 0
@@ -158,14 +159,19 @@ def main() -> None:
 
             # Maskowanie per podgrupa
             masked = apply_subgroup_mask(logits, podgrupy, subgroup_labels)
-            predictions = masked.argmax(dim=-1).cpu().tolist()
+            probs = torch.softmax(masked, dim=-1)
+            predictions = probs.argmax(dim=-1).cpu().tolist()
+            confidences = probs.max(dim=-1).values.cpu().tolist()
 
             all_predictions.extend(predictions)
+            all_confidences.extend(confidences)
             all_labels.extend(batch["labels"].tolist())
 
     # 6. Wyniki
     records = []
-    for i, (pred_label, true_label) in enumerate(zip(all_predictions, all_labels)):
+    for i, (pred_label, true_label, confidence) in enumerate(
+        zip(all_predictions, all_labels, all_confidences)
+    ):
         text = all_texts[i]
         podgrupa = text.split(" | ")[0].replace("PODGRUPA: ", "").strip()
         matnr = text.split(" | ")[1].replace("MATNR: ", "").strip()
@@ -178,6 +184,7 @@ def main() -> None:
                 "PODGRUPA": podgrupa,
                 "STAWN_prawdziwy": true_code,
                 "STAWN_predykcja": pred_code,
+                "confidence": round(confidence, 4),
                 "poprawny": pred_code == true_code,
             }
         )
