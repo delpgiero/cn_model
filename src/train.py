@@ -141,7 +141,7 @@ def main() -> None:
         hub_token=os.getenv("HF_TOKEN"),
         push_to_hub=hub_cfg["push_to_hub"],
         hub_model_id=hub_cfg["hub_model_id"],
-        max_seq_length=model_cfg["max_seq_length"],
+        max_length=model_cfg["max_seq_length"],
     )
 
     # 6. Trener
