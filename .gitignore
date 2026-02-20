@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 
 # Data (nie wrzucamy danych na GitHub)
-data/
+data/processed/*.csv
 
 # Models
 models/
@@ -12,7 +12,8 @@ checkpoints/
 # Logs
 logs/
 runs/
-data/
+data/*.csv
+data/*.xlsx
 # Misc
 .DS_Store
 *.egg-info/
