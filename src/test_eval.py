@@ -58,6 +58,7 @@ def load_model_and_tokenizer(model_cfg: dict, hub_cfg: dict) -> tuple:
         hub_cfg["hub_model_id"],
         token=os.getenv("HF_TOKEN"),
     )
+    model = model.merge_and_unload()  # scala wagi LoRA z modelem bazowym
     model.eval()
 
     return model, tokenizer
@@ -70,7 +71,7 @@ def predict(messages: list, model, tokenizer) -> str:
         tokenize=False,
         add_generation_prompt=True,
     )
-    print(f"INPUT:\n{text}\n")  # tymczasowy debug
+
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
 
     with torch.no_grad():
