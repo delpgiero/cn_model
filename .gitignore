@@ -1,0 +1,21 @@
+.env
+__pycache__/
+*.py[cod]
+
+# Data (nie wrzucamy danych na GitHub)
+data/
+
+# Models
+models/
+checkpoints/
+.venv/
+# Logs
+logs/
+runs/
+
+# Misc
+.DS_Store
+*.egg-info/
+dist/
+
+*.ipynb
