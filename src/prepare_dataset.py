@@ -14,7 +14,7 @@ from sklearn.model_selection import train_test_split
 load_dotenv()
 
 # ── Ścieżki ──────────────────────────────────────────────────────────────────
-BASE_DIR = Path(__file__).resolve().parents[1]
+BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data"
 LOOKUP_DIR = DATA_DIR / "lookups"
 OUTPUT_DIR = DATA_DIR / "processed"
@@ -54,7 +54,7 @@ def build_messages(row: pd.Series, lookups: dict[str, list[str]]) -> dict:
     user_content = (
         f"SUBGROUP: {row['PODGRUPA']}\n"
         f"MATNR: {row['MATNR']}\n"
-        f"DESCRIPTION: {row['OPIS']}"
+        f"DESCRIPTION: {row['NAZWAPL']}"
     )
 
     return {
@@ -113,7 +113,7 @@ def main() -> None:
     # 3. Dane dla Modelu 1
     df = df[df["STAWN"].notna()].copy()
     df["STAWN"] = df["STAWN"].astype(int).astype(str)
-    df = df[["MATNR", "OPIS", "PODGRUPA", "STAWN"]].dropna(subset=["OPIS"])
+    df = df[["MATNR", "NAZWAPL", "PODGRUPA", "STAWN"]].dropna(subset=["NAZWAPL"])
     print(
         f"Model 1: {len(df)} rekordów | {df['STAWN'].nunique()} kodów | {df['PODGRUPA'].nunique()} podgrup"
     )

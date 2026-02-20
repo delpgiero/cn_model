@@ -48,8 +48,7 @@ def load_lookups() -> dict[str, list[str]]:
 # ── Budowanie wiadomości ──────────────────────────────────────────────────────
 SYSTEM_MSG = (
     "You are an expert in CN customs code classification. "
-    "Assign a code ONLY from codes existing in the given subgroup. "
-    "Analyze similarities in material, dimensions, coating and recess within the subgroup. "
+    "Based on the subgroup and product description, assign the correct 8-digit customs code. "
     "Return ONLY the 8-digit customs code. No explanation, no text, exactly 8 digits. "
     "Example: 73181499"
 )
@@ -59,7 +58,7 @@ def build_messages(row: pd.Series, lookups: dict[str, list[str]]) -> list:
     user_content = (
         f"SUBGROUP: {row['PODGRUPA']}\n"
         f"MATNR: {row['MATNR']}\n"
-        f"DESCRIPTION: {row['OPIS']}"
+        f"DESCRIPTION: {row['NAZWAPL']}"
     )
     return [
         {"role": "system", "content": SYSTEM_MSG},
