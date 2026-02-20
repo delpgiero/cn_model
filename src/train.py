@@ -153,7 +153,7 @@ def main() -> None:
         eval_dataset=dataset["validation"],
         peft_config=lora_config,
         # dataset_text_field="text",  # usunięty w nowej wersji TRL
-        max_seq_length=model_cfg["max_seq_length"],
+        # max_seq_length=model_cfg["max_seq_length"],
         tokenizer=tokenizer,
     )
 
