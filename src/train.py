@@ -13,6 +13,7 @@ import yaml
 from datasets import load_dataset
 from dotenv import load_dotenv
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+from sklearn.metrics import accuracy_score
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -21,8 +22,6 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
-
-import evaluate
 
 load_dotenv()
 
@@ -87,12 +86,10 @@ def get_lora_config(qlora_cfg: dict) -> LoraConfig:
 
 # ── Metryki ───────────────────────────────────────────────────────────────────
 def get_compute_metrics():
-    accuracy = evaluate.load("accuracy")
-
     def compute_metrics(eval_pred):
         logits, labels = eval_pred
         predictions = np.argmax(logits, axis=-1)
-        return accuracy.compute(predictions=predictions, references=labels)
+        return {"accuracy": accuracy_score(labels, predictions)}
 
     return compute_metrics
 
