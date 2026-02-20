@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 
 # Data (nie wrzucamy danych na GitHub)
-data/processed/*.csv
+
 
 # Models
 models/
